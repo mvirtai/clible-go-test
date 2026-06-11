@@ -1,0 +1,32 @@
+{
+    "books": [
+        {
+            "id": "EXO",
+            "name": "Exodus",
+            "testament": "OT",
+            "position": 2,
+            "chapters": 40
+        },
+        {
+            "id": "GEN",
+            "name": "Genesis",
+            "testament": "OT",
+            "position": 1,
+            "chapters": 50
+        },
+        {
+            "id": "MAT",
+            "name": "Matthew",
+            "testament": "NT",
+            "position": 40,
+            "chapters": 28
+        },
+        {
+            "id": "JHN",
+            "name": "John",
+            "testament": "NT",
+            "position": 43,
+            "chapters": 21
+        }
+    ]
+}
