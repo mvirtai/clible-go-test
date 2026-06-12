@@ -91,13 +91,13 @@ func (p *CombinedParser) parseZefania(decoder *xml.Decoder) ([]Verse, error) {
 			switch se.Name.Local {
 			case "BIBLEBOOK":
 				// Haetaan kirjan tunniste (Zefaniassa usein bname tai bnumber)
-				currentBook = getAttributeValue(se.Attr, "bname")
+				currentBook = p.getAttrValue(se.Attr, "bname")
 				if currentBook == "" {
-					currentBook = getAttributeValue(se.Attr, "bnumber")
+					currentBook = p.getAttrValue(se.Attr, "bnumber")
 				}
 
 			case "CHAPTER":
-				chStr := getAttributeValue(se.Attr, "cnumber")
+				chStr := p.getAttrValue(se.Attr, "cnumber")
 				chNum, err := strconv.Atoi(chStr)
 				if err != nil {
 					return nil, fmt.Errorf("invalid chapter number '%s': %w", chStr, err)
@@ -105,7 +105,7 @@ func (p *CombinedParser) parseZefania(decoder *xml.Decoder) ([]Verse, error) {
 				currentChapter = chNum
 
 			case "VERS":
-				vStr := getAttributeValue(se.Attr, "vnumber")
+				vStr := p.getAttrValue(se.Attr, "vnumber")
 				vNum, err := strconv.Atoi(vStr)
 				if err != nil {
 					return nil, fmt.Errorf("invalid verse number '%s': %w", vStr, err)
@@ -229,7 +229,7 @@ func (p *CombinedParser) parseOSIS(decoder *xml.Decoder) ([]Verse, error) {
 	var currentVerse int
 	var textBuffer strings.Builder
 
-	// Lippulappu, jolla muistetaan ollanko container- vai milestone-tilassa
+	// Lippulappu, jolla muistetaan ollaanko container- vai milestone-tilassa
 	isContainerMode := false
 
 	// Sisäinen apufunktio puskurin tyhjentämiseen (flush)
@@ -255,10 +255,9 @@ func (p *CombinedParser) parseOSIS(decoder *xml.Decoder) ([]Verse, error) {
 
 		book := strings.ToUpper(parts[0]) // Muutetaan standardiksi (esim. Gen -> GEN)
 
-
 		ch, err := strconv.Atoi(parts[1])
 		if err != nil {
-			return "", 0, 0, fmt.Errorf("invalid chapter in OSIS ID '%s'", idStr, err)
+			return "", 0, 0, fmt.Errorf("invalid chapter in OSIS ID '%s': %w", idStr, err)
 		}
 
 		v, err := strconv.Atoi(parts[2])
@@ -289,7 +288,7 @@ func (p *CombinedParser) parseOSIS(decoder *xml.Decoder) ([]Verse, error) {
 				eID := p.getAttrValue(se.Attr, "eID")
 
 				if osisID != "" {
-					// 1. CONTAINER: <verse osisID="Gen.1.1">
+					// 1. CONTAINER-TYYLI: <verse osisID="Gen.1.1">
 					flushCurrentVerse()
 					b, c, v, err := parseOsisID(osisID)
 					if err != nil {
@@ -301,7 +300,7 @@ func (p *CombinedParser) parseOSIS(decoder *xml.Decoder) ([]Verse, error) {
 					isContainerMode = true
 
 				} else if sID != "" {
-					// 2. MILESTONE-START: <verse sID="Gen.1.1" />
+					// 2. MILESTONE ALKU: <verse sID="Gen.1.1"/>
 					flushCurrentVerse()
 					b, c, v, err := parseOsisID(sID)
 					if err != nil {
@@ -313,15 +312,14 @@ func (p *CombinedParser) parseOSIS(decoder *xml.Decoder) ([]Verse, error) {
 					isContainerMode = false
 
 				} else if eID != "" {
-					// 3. MILESTONE-END: <verse eID="Gen.1.1" />
+					// 3. MILESTONE LOPPU: <verse eID="Gen.1.1"/>
 					flushCurrentVerse()
 					currentVerse = 0 // Tila nollataan, odotetaan seuraavaa jaetta
-
 				}
 			}
 
 		case xml.EndElement:
-			tagname := strings.ToLower(se.Name.Local)
+			tagName := strings.ToLower(se.Name.Local)
 			// Jos olimme container-tilassa ja </verse> sulkeutuu, tallennetaan data
 			if tagName == "verse" && isContainerMode {
 				flushCurrentVerse()
@@ -335,14 +333,78 @@ func (p *CombinedParser) parseOSIS(decoder *xml.Decoder) ([]Verse, error) {
 				textBuffer.Write(se)
 			}
 		}
+	}
 
-	} verses, nil
+	return verses, nil
 }
 
+// parseBeblia parsii hierarkkisen Beblia-formaatin hyödyntäen struct-tageja lennosta
 func (p *CombinedParser) parseBeblia(decoder *xml.Decoder) ([]Verse, error) {
-	return nil, nil
-}
+	var verses []Verse
+	var currentBook string
+	var currentChapter int
 
+	// Määritellään paikallinen struct jakeen purkamista varten.
+	// `xml:"n,attr"` kertoo Golle, että tämä otetaan n-attribuutista.
+	// `xml:",chardata"` kertoo, että elementin sisäinen teksti valuu tähän kenttään.
+	type XmlVerse struct {
+		Number string `xml:"n,attr"`
+		Text   string `xml:",chardata"`
+	}
+
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break // Tiedosto luettu loppuun
+		}
+		if err != nil {
+			return nil, fmt.Errorf("error reading Beblia token: %w", err)
+		}
+
+		switch se := token.(type) {
+		case xml.StartElement:
+			switch se.Name.Local {
+			case "b":
+				// <b n="GEN">
+				currentBook = p.getAttrValue(se.Attr, "n")
+
+			case "c":
+				// <c n="1">
+				chStr := p.getAttrValue(se.Attr, "n")
+				chNum, err := strconv.Atoi(chStr)
+				if err != nil {
+					return nil, fmt.Errorf("invalid Beblia chapter '%s': %w", chStr, err)
+				}
+				currentChapter = chNum
+
+			case "v":
+				// <v n="1">Alussa loi...</v>
+				var xmlV XmlVerse
+
+				// Taika tapahtuu tässä: DecodeElement osaa hyödyntää XmlVerse-structin
+				// määrityksiä ja imee sekä attribuutin että tekstin kerralla muistiin!
+				if err := decoder.DecodeElement(&xmlV, &se); err != nil {
+					return nil, fmt.Errorf("failed to decode Beblia verse: %w", err)
+				}
+
+				vNum, err := strconv.Atoi(xmlV.Number)
+				if err != nil {
+					return nil, fmt.Errorf("invalid Beblia verse number '%s': %w", xmlV.Number, err)
+				}
+
+				// Luodaan lopullinen Verse ja liitetään se listaan
+				verses = append(verses, Verse{
+					BookID:  currentBook,
+					Chapter: currentChapter,
+					Verse:   vNum,
+					Text:    xmlV.Text,
+				})
+			}
+		}
+	}
+
+	return verses, nil
+}
 
 func (p *CombinedParser) getAttrValue(attrs []xml.Attr, name string) string {
 	for _, attr := range attrs {
